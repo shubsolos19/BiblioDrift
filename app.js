@@ -124,11 +124,28 @@ class BookRenderer {
         const scene = document.createElement('div');
         scene.className = 'book-scene';
 
+        // Badge Logic
+        let badgesHTML = '';
+        const isNew = bookData.date_added && (new Date() - new Date(bookData.date_added)) < (7 * 24 * 60 * 60 * 1000);
+        const isPopular = volumeInfo.ratingsCount && volumeInfo.ratingsCount > 1000;
+        
+        if (isNew || isPopular || categories.length > 0) {
+            badgesHTML += '<div class="book-badge-container">';
+            if (isNew) badgesHTML += '<span class="book-badge badge-new">New</span>';
+            if (isPopular) badgesHTML += '<span class="book-badge badge-popular">Popular</span>';
+            if (categories.length > 0) {
+                const mainGenre = categories[0].split(' / ')[0]; // Take first category part
+                badgesHTML += `<span class="book-badge badge-genre" title="${mainGenre}">${mainGenre}</span>`;
+            }
+            badgesHTML += '</div>';
+        }
+
         // Load flip sound
         const flipSound = new Audio('assets/sounds/page-flip.mp3');
         flipSound.volume = 0.5;
 
         scene.innerHTML = `
+            ${badgesHTML}
             <div class="book" data-id="${id}">
                 <div class="book__face book__face--front">
                     <img src="${thumb.replace('http:', 'https:')}" alt="${title}">
@@ -831,8 +848,7 @@ class GenreManager {
         for (const book of books) {
             const el = await renderer.createBookElement(book);
             this.booksGrid.appendChild(el);
-        }
-    }
+        }    }
 }
 
 // Init
@@ -1320,3 +1336,4 @@ if (document.readyState === 'loading') {
 } else {
     KeyboardShortcuts.init();
 }
+

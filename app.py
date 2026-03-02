@@ -9,9 +9,32 @@ import os
 from datetime import datetime, timedelta
 from ai_service import generate_book_note, get_ai_recommendations, get_book_mood_tags_safe, generate_chat_response, llm_service
 from models import db, User, Book, ShelfItem, BookNote, register_user, login_user
+from validators import (
+    validate_request,
+    AnalyzeMoodRequest,
+    MoodTagsRequest,
+    MoodSearchRequest,
+    GenerateNoteRequest,
+    ChatRequest,
+    AddToLibraryRequest,
+    UpdateLibraryItemRequest,
+    SyncLibraryRequest,
+    RegisterRequest,
+    LoginRequest,
+    format_validation_errors,
+    validate_jwt_secret,
+    is_production_mode
+)
 from collections import defaultdict, deque
 from math import ceil
 from time import time
+from error_responses import (
+    ErrorCodes, error_response, success_response,
+    validation_error, missing_fields_error, invalid_json_error,
+    auth_error, forbidden_error, unauthorized_access_error,
+    not_found_error, resource_exists_error, rate_limit_error,
+    internal_error, service_unavailable_error
+)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -35,7 +58,7 @@ CORS(app)
 def page_not_found(e):
     # Check if request accepts JSON (API)
     if request.path.startswith('/api/'):
-        return jsonify({"error": "Endpoint not found"}), 404
+        return error_response(ErrorCodes.ENDPOINT_NOT_FOUND, "Endpoint not found", 404)
     # Serve custom HTML for browser requests
     return app.send_static_file('404.html'), 404
 
@@ -76,9 +99,77 @@ def _rate_limited(endpoint: str) -> tuple[bool, int]:
 
     return False, 0
 
+
+def rate_limit(endpoint_name: str):
+    """Decorator to apply rate limiting to an endpoint."""
+    def decorator(f):
+        def wrapped(*args, **kwargs):
+            limited, retry_after = _rate_limited(endpoint_name)
+            if limited:
+                response = jsonify({
+                    "success": False,
+                    "error": "Rate limit exceeded. Try again shortly.",
+                    "retry_after": retry_after
+                })
+                response.status_code = 429
+                response.headers['Retry-After'] = retry_after
+                return response
+            return f(*args, **kwargs)
+        wrapped.__name__ = f.__name__
+        return wrapped
+    return decorator
+
 # Initialize AI service if available
 if MOOD_ANALYSIS_AVAILABLE:
     ai_service = AIBookService()
+
+
+# ==================== JWT SECRET VALIDATION AT STARTUP ====================
+def _validate_jwt_secret_startup():
+    """
+    Validate JWT_SECRET_KEY at application startup.
+    This function runs before the server starts to prevent insecure configurations.
+    """
+    is_prod = is_production_mode()
+    is_valid, message = validate_jwt_secret()
+    
+    if not is_valid:
+        if is_prod:
+            # In production, refuse to start with insecure configuration
+            print("\n" + "="*70)
+            print("CRITICAL SECURITY ERROR - APPLICATION REFUSING TO START")
+            print("="*70)
+            print(f"\n{message}")
+            print("\nFor production deployment, you MUST:")
+            print("  1. Set JWT_SECRET_KEY environment variable to a secure value")
+            print("  2. Use a minimum of 32 characters for the secret key")
+            print("  3. Use a cryptographically strong random string")
+            print("\nExample:")
+            print("  export JWT_SECRET_KEY=$(python -c 'import secrets; print(secrets.token_hex(32))')")
+            print("="*70 + "\n")
+            import sys
+            sys.exit(1)
+        else:
+            # In development, show warning but allow startup
+            print("\n" + "="*70)
+            print("WARNING: INSECURE JWT SECRET KEY CONFIGURATION")
+            print("="*70)
+            print(f"\n{message}")
+            print("\nThis is acceptable for DEVELOPMENT only.")
+            print("For production, you MUST set a secure JWT_SECRET_KEY.")
+            print("="*70 + "\n")
+    else:
+        # Secret is valid, show confirmation in development mode
+        if not is_prod:
+            print("\n" + "="*70)
+            print("JWT SECRET KEY CONFIGURATION: OK")
+            print("="*70)
+            print("Using a secure JWT secret key.")
+            print("="*70 + "\n")
+
+
+# Run JWT secret validation at module load time (before any requests)
+_validate_jwt_secret_startup()
 
 @app.route('/api/v1/config', methods=['GET'])
 def get_config():
@@ -130,143 +221,91 @@ def index():
     return jsonify(endpoints_info)
 
 @app.route('/api/v1/analyze-mood', methods=['POST'])
+@rate_limit('analyze_mood')
 def handle_analyze_mood():
     """Analyze book mood using GoodReads reviews."""
-    limited, retry_after = _rate_limited('analyze_mood')
-    if limited:
-        response = jsonify({
-            "success": False,
-            "error": "Rate limit exceeded. Try again shortly.",
-            "retry_after": retry_after
-        })
-        response.status_code = 429
-        response.headers['Retry-After'] = retry_after
-        return response
     if not MOOD_ANALYSIS_AVAILABLE:
-        return jsonify({
-            "success": False,
-            "error": "Mood analysis not available - missing dependencies"
-        }), 503
+        return service_unavailable_error("Mood analysis not available - missing dependencies")
     
     try:
         data = request.get_json()
-        if not data:
-            return jsonify({"error": "Invalid JSON or missing request body"}), 400
-            
-        title = data.get('title', '')
-        author = data.get('author', '')
         
-        if not title:
-            return jsonify({"error": "Title is required"}), 400
+        # Validate request using Pydantic
+        is_valid, validated_data = validate_request(AnalyzeMoodRequest, data)
+        if not is_valid:
+            return jsonify(validated_data), 400
+        
+        title = validated_data.title
+        author = validated_data.author
         
         mood_analysis = ai_service.analyze_book_mood(title, author)
         
         if mood_analysis:
-            return jsonify({
-                "success": True,
-                "mood_analysis": mood_analysis
-            })
+            return success_response(
+                data={"mood_analysis": mood_analysis}
+            )
         else:
-            return jsonify({
-                "success": False,
-                "error": "Could not analyze mood for this book"
-            }), 404
+            return not_found_error("Mood analysis for this book")
             
     except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
+        return internal_error(str(e))
 
 @app.route('/api/v1/mood-tags', methods=['POST'])
+@rate_limit('mood_tags')
 def handle_mood_tags():
     """Get mood tags for a book."""
-    limited, retry_after = _rate_limited('mood_tags')
-    if limited:
-        response = jsonify({
-            "success": False,
-            "error": "Rate limit exceeded. Try again shortly.",
-            "retry_after": retry_after
-        })
-        response.status_code = 429
-        response.headers['Retry-After'] = retry_after
-        return response
     try:
         data = request.get_json()
-        if not data:
-            return jsonify({"error": "Invalid JSON or missing request body"}), 400
-            
-        title = data.get('title', '')
-        author = data.get('author', '')
         
-        if not title:
-            return jsonify({"error": "Title is required"}), 400
+        # Validate request using Pydantic
+        is_valid, validated_data = validate_request(MoodTagsRequest, data)
+        if not is_valid:
+            return jsonify(validated_data), 400
+        
+        title = validated_data.title
+        author = validated_data.author
         
         mood_tags = get_book_mood_tags_safe(title, author)
-        return jsonify({
-            "success": True,
-            "mood_tags": mood_tags
-        })
+        return success_response(
+            data={"mood_tags": mood_tags}
+        )
         
     except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
+        return internal_error(str(e))
 
 @app.route('/api/v1/mood-search', methods=['POST'])
+@rate_limit('mood_search')
 def handle_mood_search():
     """Search for books based on mood/vibe."""
-    limited, retry_after = _rate_limited('mood_search')
-    if limited:
-        response = jsonify({
-            "success": False,
-            "error": "Rate limit exceeded. Try again shortly.",
-            "retry_after": retry_after
-        })
-        response.status_code = 429
-        response.headers['Retry-After'] = retry_after
-        return response
     try:
         data = request.get_json()
         if not data:
-            return jsonify({"error": "Invalid JSON or missing request body"}), 400
+            return invalid_json_error()
             
         mood_query = data.get('query', '')
         
         if not mood_query:
-            return jsonify({"error": "Query is required"}), 400
+            return validation_error("Query is required")
         
         recommendations = get_ai_recommendations(mood_query)
-        return jsonify({
-            "success": True,
-            "recommendations": recommendations,
-            "query": mood_query
-        })
+        return success_response(
+            data={
+                "recommendations": recommendations,
+                "query": mood_query
+            }
+        )
         
     except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
+        return internal_error(str(e))
 
 @app.route('/api/v1/generate-note', methods=['POST'])
+@rate_limit('generate_note')
 def handle_generate_note():
     """Generate AI-powered book note with optional mood analysis."""
-    limited, retry_after = _rate_limited('generate_note')
-    if limited:
-        response = jsonify({
-            "success": False,
-            "error": "Rate limit exceeded. Try again shortly.",
-            "retry_after": retry_after
-        })
-        response.status_code = 429
-        response.headers['Retry-After'] = retry_after
-        return response
     try:
         data = request.get_json()
         if not data:
-            return jsonify({"error": "Invalid JSON or missing request body"}), 400
+            return invalid_json_error()
             
         description = data.get('description', '')
         title = data.get('title', '')
@@ -276,7 +315,7 @@ def handle_generate_note():
         cached_note = BookNote.query.filter_by(book_title=title, book_author=author).first()
         if cached_note:
             print(f"Cache hit for {title} by {author}")
-            return jsonify({"vibe": cached_note.content})
+            return success_response(data={"vibe": cached_note.content})
         
         vibe = generate_book_note(description, title, author)
         
@@ -290,13 +329,10 @@ def handle_generate_note():
             print(f"Failed to cache note: {e}")
             db.session.rollback()
 
-        return jsonify({"vibe": vibe})
+        return success_response(data={"vibe": vibe})
         
     except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
+        return internal_error(str(e))
 
 @app.route('/api/v1/chat', methods=['POST'])
 def handle_chat():
@@ -304,13 +340,13 @@ def handle_chat():
     try:
         data = request.get_json()
         if not data:
-            return jsonify({"error": "Invalid JSON or missing request body"}), 400
+            return invalid_json_error()
             
         user_message = data.get('message', '')
         conversation_history = data.get('history', [])
         
         if not user_message:
-            return jsonify({"error": "Message is required"}), 400
+            return validation_error("Message is required")
         
         # Validate and limit conversation history
         if not isinstance(conversation_history, list):
@@ -332,18 +368,16 @@ def handle_chat():
         # Try to get book recommendations based on the message
         recommendations = get_ai_recommendations(user_message)
         
-        return jsonify({
-            "success": True,
-            "response": response,
-            "recommendations": recommendations,
-            "timestamp": datetime.now().isoformat()
-        })
+        return success_response(
+            data={
+                "response": response,
+                "recommendations": recommendations,
+                "timestamp": datetime.now().isoformat()
+            }
+        )
         
     except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
+        return internal_error(str(e))
 
 @app.route('/api/v1/health', methods=['GET'])
 def health_check():
@@ -373,11 +407,11 @@ def add_to_library():
     
     required_fields = ['user_id', 'google_books_id', 'title', 'shelf_type']
     if not all(field in data for field in required_fields):
-        return jsonify({"error": "Missing required fields"}), 400
+        return missing_fields_error(', '.join(required_fields))
     
     # Ensure user matches token
     if str(data['user_id']) != str(current_user_id):
-        return jsonify({"error": "Unauthorized access to another user's library"}), 403
+        return unauthorized_access_error("Cannot access another user's library")
     
     try:
         # Check if the book exists in the Book table
@@ -407,10 +441,13 @@ def add_to_library():
             db.session.add(item)
         
         db.session.commit()
-        return jsonify({"message": "Book added to shelf", "item": item.to_dict()}), 201
+        return success_response(
+            data={"message": "Book added to shelf", "item": item.to_dict()},
+            status_code=201
+        )
     except Exception as e:
         db.session.rollback()
-        return jsonify({"error": str(e)}), 500
+        return internal_error(str(e))
 
 @app.route('/api/v1/library/<int:user_id>', methods=['GET'])
 @jwt_required()
@@ -418,14 +455,14 @@ def get_library(user_id):
     """Get all books in a user's library."""
     current_user_id = get_jwt_identity()
     if str(user_id) != str(current_user_id):
-        return jsonify({"error": "Unauthorized"}), 403
+        return forbidden_error("Cannot access another user's library")
         
     try:
         items = ShelfItem.query.filter_by(user_id=user_id).all()
         # Ensure join loads correctly or use manual load if lazy loading fails
-        return jsonify({"library": [item.to_dict() for item in items]}), 200
+        return success_response(data={"library": [item.to_dict() for item in items]})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return internal_error(str(e))
 
 @app.route('/api/v1/library/<int:item_id>', methods=['PUT'])
 @jwt_required()
@@ -437,19 +474,19 @@ def update_library_item(item_id):
     try:
         item = ShelfItem.query.get(item_id)
         if not item:
-            return jsonify({"error": "Item not found"}), 404
+            return not_found_error("Library item")
             
         if str(item.user_id) != str(current_user_id):
-             return jsonify({"error": "Unauthorized"}), 403
+             return forbidden_error("Cannot modify another user's library item")
 
         if 'shelf_type' in data:
             item.shelf_type = data['shelf_type']
             
         db.session.commit()
-        return jsonify({"message": "Item updated", "item": item.to_dict()}), 200
+        return success_response(data={"message": "Item updated", "item": item.to_dict()})
     except Exception as e:
         db.session.rollback()
-        return jsonify({"error": str(e)}), 500
+        return internal_error(str(e))
 
 @app.route('/api/v1/library/<int:item_id>', methods=['DELETE'])
 @jwt_required()
@@ -459,17 +496,17 @@ def remove_from_library(item_id):
     try:
         item = ShelfItem.query.get(item_id)
         if not item:
-            return jsonify({"error": "Item not found"}), 404
+            return not_found_error("Library item")
         
         if str(item.user_id) != str(current_user_id):
-            return jsonify({"error": "Unauthorized"}), 403
+            return forbidden_error("Cannot delete another user's library item")
             
         db.session.delete(item)
         db.session.commit()
-        return jsonify({"message": "Item removed"}), 200
+        return success_response(data={"message": "Item removed"})
     except Exception as e:
         db.session.rollback()
-        return jsonify({"error": str(e)}), 500
+        return internal_error(str(e))
 
 
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///biblio.db')
@@ -488,12 +525,12 @@ def sync_library():
     user_id = data.get('user_id')
     
     if str(user_id) != str(current_user_id):
-        return jsonify({"error": "Unauthorized"}), 403
+        return forbidden_error("Cannot sync to another user's library")
         
     items = data.get('items', [])
     
     if not user_id:
-        return jsonify({"error": "Missing user_id"}), 400
+        return validation_error("user_id is required")
         
     synced_count = 0
     errors = 0
@@ -537,10 +574,10 @@ def sync_library():
     
     try:
         db.session.commit()
-        return jsonify({"message": f"Synced {synced_count} items", "errors": errors}), 200
+        return success_response(data={"message": f"Synced {synced_count} items", "errors": errors})
     except Exception as e:
         db.session.rollback()
-        return jsonify({"error": str(e)}), 500
+        return internal_error(str(e))
 
 @app.route('/api/v1/register', methods=['POST'])
 def register():
@@ -551,11 +588,11 @@ def register():
     password = data.get('password')
     
     if not username or not email or not password:
-        return jsonify({"error": "Missing fields"}), 400
+        return missing_fields_error("username, email, password")
 
     # check if user exists
     if User.query.filter((User.username==username) | (User.email==email)).first():
-        return jsonify({"error": "User already exists"}), 409
+        return resource_exists_error("User")
 
     try:
         register_user(username, email, password)
@@ -565,17 +602,20 @@ def register():
         # Create JWT token
         access_token = create_access_token(identity=str(user.id))
         
-        return jsonify({
-            "message": "User registered successfully",
-            "access_token": access_token,
-            "user": {
-                "id": user.id,
-                "username": user.username,
-                "email": user.email
-            }
-        }), 201
+        return success_response(
+            data={
+                "message": "User registered successfully",
+                "access_token": access_token,
+                "user": {
+                    "id": user.id,
+                    "username": user.username,
+                    "email": user.email
+                }
+            },
+            status_code=201
+        )
     except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        return validation_error(str(e))
 
 @app.route('/api/v1/login', methods=['POST'])
 def login():
@@ -585,7 +625,7 @@ def login():
     password = data.get('password')
     
     if not username_or_email or not password:
-        return jsonify({"error": "Missing fields"}), 400
+        return missing_fields_error("username/email, password")
 
     # Try to find user by username or email
     user = User.query.filter((User.username==username_or_email) | (User.email==username_or_email)).first()
@@ -594,17 +634,19 @@ def login():
         # Create JWT token
         access_token = create_access_token(identity=str(user.id))
         
-        return jsonify({
-            "message": "Login successful",
-            "access_token": access_token,
-            "user": {
-                "id": user.id,
-                "username": user.username,
-                "email": user.email
+        return success_response(
+            data={
+                "message": "Login successful",
+                "access_token": access_token,
+                "user": {
+                    "id": user.id,
+                    "username": user.username,
+                    "email": user.email
+                }
             }
-        }), 200
+        )
         
-    return jsonify({"error": "Invalid username or password"}), 401
+    return auth_error("Invalid username or password")
 
 with app.app_context():
     db.create_all()  # creates User & ShelfItem tables
