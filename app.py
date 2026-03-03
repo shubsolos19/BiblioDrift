@@ -9,7 +9,8 @@ from dotenv import load_dotenv
 import os
 from datetime import datetime, timedelta
 from ai_service import generate_book_note, get_ai_recommendations, get_book_mood_tags_safe, generate_chat_response, llm_service
-from models import db, User, Book, ShelfItem, BookNote, ReadingGoal, ReadingStats, Collection, CollectionItem, register_user, login_user
+from models import db, User, Book, ShelfItem, BookNote, ReadingGoal, ReadingStats, Collection, CollectionItem, PriceHistory, PriceAlert, register_user, login_user
+from price_tracker import get_price_tracker
 from validators import (
     validate_request,
     AnalyzeMoodRequest,

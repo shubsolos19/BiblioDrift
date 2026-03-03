@@ -332,3 +332,32 @@ def is_production_mode() -> bool:
     
     # Default to False (development mode)
     return False
+
+
+# ==================== PRICE ALERTS ====================
+
+class SetPriceAlertRequest(BaseModel):
+    """Request schema for POST /api/v1/books/<book_id>/alert endpoint."""
+    user_id: int = Field(..., description="User ID")
+    shelf_item_id: int = Field(..., description="Shelf item ID")
+    target_price: float = Field(..., gt=0, description="Target price for alert (must be positive)")
+    
+    @field_validator('target_price')
+    @classmethod
+    def target_price_positive(cls, v: float) -> float:
+        """Ensure target price is positive."""
+        if v <= 0:
+            raise ValueError('Target price must be positive')
+        return v
+
+
+class GetPriceHistoryRequest(BaseModel):
+    """Request schema for GET /api/v1/books/<book_id>/prices endpoint."""
+    retailer: Optional[str] = Field(default=None, description="Filter by retailer")
+    limit: Optional[int] = Field(default=30, ge=1, le=100, description="Limit number of records")
+
+
+class GetAlertsRequest(BaseModel):
+    """Request schema for GET /api/v1/alerts endpoint."""
+    user_id: int = Field(..., description="User ID")
+    active_only: bool = Field(default=True, description="Only return active alerts")
