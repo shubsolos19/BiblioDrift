@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 import os
 from datetime import datetime, timedelta
 from ai_service import generate_book_note, get_ai_recommendations, get_book_mood_tags_safe, generate_chat_response, llm_service
-from models import db, User, Book, ShelfItem, BookNote, ReadingGoal, ReadingStats, register_user, login_user
+from models import db, User, Book, ShelfItem, BookNote, ReadingGoal, ReadingStats, Collection, CollectionItem, register_user, login_user
 from validators import (
     validate_request,
     AnalyzeMoodRequest,
@@ -24,6 +24,9 @@ from validators import (
     LoginRequest,
     SetGoalRequest,
     GetStatsRequest,
+    CollectionRequest,
+    UpdateCollectionRequest,
+    AddToCollectionRequest,
     format_validation_errors,
     validate_jwt_secret,
     is_production_mode
@@ -904,6 +907,307 @@ def get_leaderboard():
         return jsonify({
             "year": year,
             "leaderboard": leaderboard
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ==================== COLLECTIONS ENDPOINTS ====================
+@app.route('/api/v1/collections', methods=['POST'])
+@jwt_required()
+def create_collection():
+    """Create a new collection."""
+    data = request.json
+    current_user_id = get_jwt_identity()
+    
+    # Validate request
+    is_valid, validated_data = validate_request(CollectionRequest, data)
+    if not is_valid:
+        return jsonify(validated_data), 400
+    
+    # Ensure user matches token
+    if str(data['user_id']) != str(current_user_id):
+        return jsonify({"error": "Unauthorized"}), 403
+    
+    try:
+        # Check if collection with same name already exists
+        existing = Collection.query.filter_by(
+            user_id=data['user_id'], name=data['name']
+        ).first()
+        
+        if existing:
+            return jsonify({"error": "Collection with this name already exists"}), 409
+        
+        collection = Collection(
+            user_id=data['user_id'],
+            name=data['name'],
+            description=data.get('description', ''),
+            is_public=data.get('is_public', False)
+        )
+        db.session.add(collection)
+        db.session.commit()
+        
+        return jsonify({
+            "message": "Collection created successfully",
+            "collection": collection.to_dict()
+        }), 201
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/v1/collections', methods=['GET'])
+@jwt_required()
+def get_collections():
+    """Get user's collections."""
+    user_id = request.args.get('user_id', type=int)
+    
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
+    
+    current_user_id = get_jwt_identity()
+    if str(user_id) != str(current_user_id):
+        return jsonify({"error": "Unauthorized"}), 403
+    
+    try:
+        collections = Collection.query.filter_by(user_id=user_id).order_by(Collection.created_at.desc()).all()
+        return jsonify({
+            "collections": [c.to_dict() for c in collections]
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/v1/collections/<int:collection_id>', methods=['GET'])
+@jwt_required()
+def get_collection(collection_id):
+    """Get a single collection with its items."""
+    current_user_id = get_jwt_identity()
+    
+    try:
+        collection = Collection.query.get(collection_id)
+        if not collection:
+            return jsonify({"error": "Collection not found"}), 404
+        
+        # Check access - owner can view private, anyone can view public
+        if not collection.is_public and str(collection.user_id) != str(current_user_id):
+            return jsonify({"error": "Unauthorized"}), 403
+        
+        return jsonify({
+            "collection": collection.to_dict(include_items=True)
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/v1/collections/<int:collection_id>', methods=['PUT'])
+@jwt_required()
+def update_collection(collection_id):
+    """Update a collection."""
+    data = request.json
+    current_user_id = get_jwt_identity()
+    
+    # Validate request
+    is_valid, validated_data = validate_request(UpdateCollectionRequest, data)
+    if not is_valid:
+        return jsonify(validated_data), 400
+    
+    try:
+        collection = Collection.query.get(collection_id)
+        if not collection:
+            return jsonify({"error": "Collection not found"}), 404
+        
+        if str(collection.user_id) != str(current_user_id):
+            return jsonify({"error": "Unauthorized"}), 403
+        
+        # Update fields if provided
+        if 'name' in data and data['name']:
+            # Check if new name already exists for this user
+            existing = Collection.query.filter(
+                Collection.user_id == collection.user_id,
+                Collection.name == data['name'],
+                Collection.id != collection_id
+            ).first()
+            if existing:
+                return jsonify({"error": "Collection with this name already exists"}), 409
+            collection.name = data['name']
+        
+        if 'description' in data:
+            collection.description = data['description']
+        
+        if 'is_public' in data:
+            collection.is_public = data['is_public']
+        
+        db.session.commit()
+        
+        return jsonify({
+            "message": "Collection updated successfully",
+            "collection": collection.to_dict()
+        }), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/v1/collections/<int:collection_id>', methods=['DELETE'])
+@jwt_required()
+def delete_collection(collection_id):
+    """Delete a collection."""
+    current_user_id = get_jwt_identity()
+    
+    try:
+        collection = Collection.query.get(collection_id)
+        if not collection:
+            return jsonify({"error": "Collection not found"}), 404
+        
+        if str(collection.user_id) != str(current_user_id):
+            return jsonify({"error": "Unauthorized"}), 403
+        
+        db.session.delete(collection)
+        db.session.commit()
+        
+        return jsonify({"message": "Collection deleted successfully"}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/v1/collections/<int:collection_id>/books', methods=['POST'])
+@jwt_required()
+def add_book_to_collection(collection_id):
+    """Add a book to a collection."""
+    data = request.json
+    current_user_id = get_jwt_identity()
+    
+    # Validate request
+    is_valid, validated_data = validate_request(AddToCollectionRequest, data)
+    if not is_valid:
+        return jsonify(validated_data), 400
+    
+    try:
+        collection = Collection.query.get(collection_id)
+        if not collection:
+            return jsonify({"error": "Collection not found"}), 404
+        
+        if str(collection.user_id) != str(current_user_id):
+            return jsonify({"error": "Unauthorized"}), 403
+        
+        # Check if book exists in Book table
+        book = Book.query.filter_by(google_books_id=data['google_books_id']).first()
+        if not book:
+            book = Book(
+                google_books_id=data['google_books_id'],
+                title=data['title'],
+                authors=data.get('authors', ''),
+                thumbnail=data.get('thumbnail', '')
+            )
+            db.session.add(book)
+            db.session.flush()
+        
+        # Check if book already in collection
+        existing_item = CollectionItem.query.filter_by(
+            collection_id=collection_id, book_id=book.id
+        ).first()
+        
+        if existing_item:
+            return jsonify({"error": "Book already in collection"}), 409
+        
+        # Add book to collection
+        item = CollectionItem(
+            collection_id=collection_id,
+            book_id=book.id
+        )
+        db.session.add(item)
+        db.session.commit()
+        
+        return jsonify({
+            "message": "Book added to collection",
+            "item": item.to_dict()
+        }), 201
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/v1/collections/<int:collection_id>/books', methods=['GET'])
+@jwt_required()
+def get_collection_books(collection_id):
+    """Get all books in a collection."""
+    current_user_id = get_jwt_identity()
+    
+    try:
+        collection = Collection.query.get(collection_id)
+        if not collection:
+            return jsonify({"error": "Collection not found"}), 404
+        
+        # Check access
+        if not collection.is_public and str(collection.user_id) != str(current_user_id):
+            return jsonify({"error": "Unauthorized"}), 403
+        
+        items = CollectionItem.query.filter_by(collection_id=collection_id).order_by(CollectionItem.added_at.desc()).all()
+        
+        return jsonify({
+            "collection": collection.to_dict(),
+            "books": [item.to_dict() for item in items]
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/v1/collections/<int:collection_id>/books/<int:book_id>', methods=['DELETE'])
+@jwt_required()
+def remove_book_from_collection(collection_id, book_id):
+    """Remove a book from a collection."""
+    current_user_id = get_jwt_identity()
+    
+    try:
+        collection = Collection.query.get(collection_id)
+        if not collection:
+            return jsonify({"error": "Collection not found"}), 404
+        
+        if str(collection.user_id) != str(current_user_id):
+            return jsonify({"error": "Unauthorized"}), 403
+        
+        item = CollectionItem.query.filter_by(collection_id=collection_id, book_id=book_id).first()
+        if not item:
+            return jsonify({"error": "Book not found in collection"}), 404
+        
+        db.session.delete(item)
+        db.session.commit()
+        
+        return jsonify({"message": "Book removed from collection"}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/v1/collections/public', methods=['GET'])
+def get_public_collections():
+    """Browse public collections."""
+    try:
+        limit = request.args.get('limit', 20, type=int)
+        offset = request.args.get('offset', 0, type=int)
+        
+        collections = Collection.query.filter_by(is_public=True).order_by(
+            Collection.created_at.desc()
+        ).offset(offset).limit(limit).all()
+        
+        # Get total count
+        total = Collection.query.filter_by(is_public=True).count()
+        
+        result = []
+        for c in collections:
+            collection_data = c.to_dict()
+            # Add owner username
+            user = User.query.get(c.user_id)
+            collection_data['owner_username'] = user.username if user else "Unknown"
+            result.append(collection_data)
+        
+        return jsonify({
+            "collections": result,
+            "total": total,
+            "limit": limit,
+            "offset": offset
         }), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
