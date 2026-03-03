@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 import os
 from datetime import datetime, timedelta
 from ai_service import generate_book_note, get_ai_recommendations, get_book_mood_tags_safe, generate_chat_response, llm_service
-from models import db, User, Book, ShelfItem, BookNote, register_user, login_user
+from models import db, User, Book, ShelfItem, BookNote, ReadingGoal, ReadingStats, register_user, login_user
 from validators import (
     validate_request,
     AnalyzeMoodRequest,
@@ -22,6 +22,8 @@ from validators import (
     SyncLibraryRequest,
     RegisterRequest,
     LoginRequest,
+    SetGoalRequest,
+    GetStatsRequest,
     format_validation_errors,
     validate_jwt_secret,
     is_production_mode
@@ -493,6 +495,97 @@ def get_library(user_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# ==================== READING STATS HELPER FUNCTIONS ====================
+def _update_reading_stats(user_id, book):
+    """Update reading stats when a book is finished."""
+    now = datetime.utcnow()
+    year = now.year
+    month = now.month
+    
+    # Get or create stats record for this month
+    stats = ReadingStats.query.filter_by(
+        user_id=user_id, year=year, month=month
+    ).first()
+    
+    if not stats:
+        stats = ReadingStats(
+            user_id=user_id,
+            year=year,
+            month=month,
+            books_completed=0,
+            pages_read=0
+        )
+        db.session.add(stats)
+    
+    # Increment books completed
+    stats.books_completed += 1
+    
+    # Add pages read if available
+    if book and book.page_count:
+        stats.pages_read += book.page_count
+    
+    db.session.commit()
+
+
+def _calculate_reading_streak(user_id):
+    """Calculate the user's current reading streak in days."""
+    # Get all finished books sorted by finished_at descending
+    finished_items = ShelfItem.query.filter_by(
+        user_id=user_id, shelf_type='finished'
+    ).filter(ShelfItem.finished_at.isnot(None)).order_by(
+        ShelfItem.finished_at.desc()
+    ).all()
+    
+    if not finished_items:
+        return 0
+    
+    # Check if the most recent finish was today or yesterday
+    now = datetime.utcnow()
+    today = now.date()
+    most_recent = finished_items[0].finished_at.date()
+    
+    # If the most recent finish is more than 1 day ago, streak is broken
+    if (today - most_recent).days > 1:
+        return 0
+    
+    # Count consecutive days
+    streak = 1
+    prev_date = most_recent
+    
+    for item in finished_items[1:]:
+        finish_date = item.finished_at.date()
+        days_diff = (prev_date - finish_date).days
+        
+        if days_diff == 1:
+            streak += 1
+            prev_date = finish_date
+        elif days_diff > 1:
+            break
+        # If days_diff == 0, same day, don't increment but continue
+    
+    return streak
+
+
+def _get_yearly_stats(user_id, year):
+    """Get yearly reading statistics."""
+    stats = ReadingStats.query.filter_by(
+        user_id=user_id, year=year
+    ).all()
+    
+    total_books = sum(s.books_completed for s in stats)
+    total_pages = sum(s.pages_read for s in stats)
+    
+    # Get monthly breakdown
+    monthly = {s.month: s.books_completed for s in stats}
+    
+    return {
+        "total_books": total_books,
+        "total_pages": total_pages,
+        "monthly": monthly
+    }
+
+
+# ==================== LIBRARY ENDPOINTS ====================
 @app.route('/api/v1/library/<int:item_id>', methods=['PUT'])
 @jwt_required()
 def update_library_item(item_id):
@@ -508,8 +601,21 @@ def update_library_item(item_id):
         if str(item.user_id) != str(current_user_id):
              return jsonify({"error": "Unauthorized"}), 403
 
+        old_shelf_type = item.shelf_type
+        
         if 'shelf_type' in data:
             item.shelf_type = data['shelf_type']
+            # Auto-set finished_at timestamp when marking book as finished
+            if data['shelf_type'] == 'finished' and old_shelf_type != 'finished':
+                item.finished_at = datetime.utcnow()
+                # Update reading stats
+                _update_reading_stats(item.user_id, item.book)
+            
+        if 'progress' in data:
+            item.progress = data['progress']
+            
+        if 'rating' in data:
+            item.rating = data['rating']
             
         db.session.commit()
         return jsonify({"message": "Item updated", "item": item.to_dict()}), 200
@@ -673,6 +779,135 @@ def login():
         }), 200
         
     return jsonify({"error": "Invalid username or password"}), 401
+
+
+# ==================== READING STATS ENDPOINTS ====================
+@app.route('/api/v1/stats/goal', methods=['POST'])
+@jwt_required()
+def set_reading_goal():
+    """Set or update annual reading goal."""
+    data = request.json
+    current_user_id = get_jwt_identity()
+    
+    # Validate request
+    is_valid, validated_data = validate_request(SetGoalRequest, data)
+    if not is_valid:
+        return jsonify(validated_data), 400
+    
+    # Ensure user matches token
+    if str(data['user_id']) != str(current_user_id):
+        return jsonify({"error": "Unauthorized"}), 403
+    
+    try:
+        # Check if goal already exists for this year
+        existing_goal = ReadingGoal.query.filter_by(
+            user_id=data['user_id'], year=data['year']
+        ).first()
+        
+        if existing_goal:
+            existing_goal.target_books = data['target_books']
+            goal = existing_goal
+        else:
+            goal = ReadingGoal(
+                user_id=data['user_id'],
+                year=data['year'],
+                target_books=data['target_books']
+            )
+            db.session.add(goal)
+        
+        db.session.commit()
+        return jsonify({
+            "message": "Reading goal set successfully",
+            "goal": goal.to_dict()
+        }), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/v1/stats', methods=['GET'])
+@jwt_required()
+def get_reading_stats():
+    """Get reading statistics for the user."""
+    user_id = request.args.get('user_id', type=int)
+    year = request.args.get('year', datetime.now().year, type=int)
+    
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
+    
+    current_user_id = get_jwt_identity()
+    if str(user_id) != str(current_user_id):
+        return jsonify({"error": "Unauthorized"}), 403
+    
+    try:
+        # Get yearly stats
+        yearly_stats = _get_yearly_stats(user_id, year)
+        
+        # Get current streak
+        current_streak = _calculate_reading_streak(user_id)
+        
+        # Get reading goal for the year
+        goal = ReadingGoal.query.filter_by(user_id=user_id, year=year).first()
+        
+        # Get this month's stats
+        now = datetime.utcnow()
+        current_month_stats = ReadingStats.query.filter_by(
+            user_id=user_id, year=year, month=now.month
+        ).first()
+        
+        return jsonify({
+            "user_id": user_id,
+            "year": year,
+            "books_this_year": yearly_stats["total_books"],
+            "pages_this_year": yearly_stats["total_pages"],
+            "books_this_month": current_month_stats.books_completed if current_month_stats else 0,
+            "pages_this_month": current_month_stats.pages_read if current_month_stats else 0,
+            "current_streak": current_streak,
+            "goal": goal.to_dict() if goal else None,
+            "monthly_breakdown": yearly_stats["monthly"]
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/v1/stats/leaderboard', methods=['GET'])
+@jwt_required()
+def get_leaderboard():
+    """Get community reading leaderboard."""
+    year = request.args.get('year', datetime.now().year, type=int)
+    limit = request.args.get('limit', 10, type=int)
+    
+    try:
+        # Get all goals for the year
+        goals = ReadingGoal.query.filter_by(year=year).all()
+        
+        leaderboard = []
+        for goal in goals:
+            user = User.query.get(goal.user_id)
+            yearly_stats = _get_yearly_stats(goal.user_id, year)
+            
+            leaderboard.append({
+                "user_id": goal.user_id,
+                "username": user.username if user else "Unknown",
+                "target_books": goal.target_books,
+                "books_completed": yearly_stats["total_books"],
+                "pages_read": yearly_stats["total_pages"],
+                "progress_percentage": round((yearly_stats["total_books"] / goal.target_books * 100), 1) if goal.target_books > 0 else 0
+            })
+        
+        # Sort by books completed descending
+        leaderboard.sort(key=lambda x: x["books_completed"], reverse=True)
+        
+        # Limit results
+        leaderboard = leaderboard[:limit]
+        
+        return jsonify({
+            "year": year,
+            "leaderboard": leaderboard
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 with app.app_context():
     db.create_all()  # creates User & ShelfItem tables
