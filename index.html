@@ -1,10 +1,5 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>BiblioDrift | Find yourself in the pages</title>
-    <link rel="stylesheet" href="style.css" />
 
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -144,41 +139,34 @@
         <a href="#"><i class="fab fa-facebook"></i></a>
         <a href="#"><i class="fab fa-x"></i></a>
       </div>
-    </footer>
+    </dialog>
 
-    <!-- Glass Modal for Book Details -->
+    <!-- Book Details Modal -->
     <dialog id="book-details-modal" class="glass-modal">
       <div class="modal-content">
-        <button class="close-modal-btn" id="closeModalBtn">
-          <i class="fa-solid fa-xmark"></i>
-        </button>
-
+        <button class="close-modal-btn" id="closeModalBtn"><i class="fa-solid fa-xmark"></i></button>
         <div class="modal-body">
-          <div class="modal-media">
-            <img id="modal-img" src="" alt="Book Cover" />
-          </div>
-
+          <div class="modal-media"><img id="modal-img" src="" alt="Book Cover" /></div>
           <div class="modal-info">
             <h2 id="modal-title">Book Title</h2>
             <p id="modal-author" class="modal-subtitle">Author Name</p>
-
             <div class="ai-insight-box">
-              <div class="ai-header">
-                <i class="fa-solid fa-wand-magic-sparkles"></i>
-                <span>AI Insight (Spoiler-Free)</span>
-              </div>
+              <div class="ai-header"><i class="fa-solid fa-wand-magic-sparkles"></i><span>AI Insight</span></div>
               <p id="modal-summary">Loading thoughts...</p>
             </div>
-
             <div class="modal-actions">
-              <button id="modal-add-btn" class="btn-primary">
-                <i class="fa-regular fa-heart"></i> Add to Library
-              </button>
+              <button id="modal-add-btn" class="btn-primary"><i class="fa-regular fa-heart"></i> Add to Library</button>
             </div>
           </div>
         </div>
       </div>
     </dialog>
+  </main>
+
+  <button id="backToTop" class="btn-icon back-to-top" title="Back to Top">
+    <i class="fa-solid fa-arrow-up"></i>
+  </button>
+
 
     <script src="app.js"></script>
     <script src="script/header-scroll.js"></script>
