@@ -610,9 +610,9 @@ async function handleAuth(event) {
             // Success!
             // Store Access Token and User Info
             if (data.access_token) {
-                localStorage.setItem('bibliodrift_token', data.access_token);
+                safeSetLocalStorage('bibliodrift_token', data.access_token);
             }
-            localStorage.setItem('bibliodrift_user', JSON.stringify(data.user));
+            safeSetLocalStorage('bibliodrift_user', JSON.stringify(data.user));
 
             if (typeof showToast === 'function')
                 showToast(`${mode === 'login' ? 'Welcome back' : 'Welcome'}, ${data.user.username}!`, "success");
