@@ -1358,3 +1358,114 @@ if (document.readyState === 'loading') {
     KeyboardShortcuts.init();
 }
 
+// =========================================
+//      BOOKSELLER RECOMMENDS (#46)           */
+// =========================================
+
+class BooksellerRecommends {
+    constructor() {
+        this.revealBtn = document.getElementById('reveal-vibe-btn');
+        this.aiBookTitle = document.getElementById('ai-book-title');
+        this.aiBookAuthor = document.getElementById('ai-book-author');
+        this.aiNoteContent = document.getElementById('ai-note-content');
+        this.recommendedBookCover = document.getElementById('recommended-book-cover');
+        
+        this.initEventListeners();
+    }
+
+    initEventListeners() {
+        if (this.revealBtn) {
+            this.revealBtn.addEventListener('click', () => this.fetchBooksellerRecommendation());
+        }
+    }
+
+    async fetchBooksellerRecommendation() {
+        try {
+            // Add loading state
+            this.setLoadingState(true);
+            
+            // Make API call to generate recommendation
+            const response = await fetch(`${MOOD_API_BASE}/generate-note`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    vibe: 'cozy discovery',
+                    intent: 'bookseller recommendation',
+                    description: 'A perfect book for a quiet afternoon of reading'
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            const data = await response.json();
+            
+            if (data.success && data.data) {
+                // Update DOM with AI recommendation
+                this.updateRecommendationDisplay(data.data);
+                showToast('Bookseller recommendation ready!', 'info');
+            } else {
+                throw new Error(data.message || 'Invalid response format');
+            }
+
+        } catch (error) {
+            console.error('Error fetching bookseller recommendation:', error);
+            showToast('The bookseller is resting right now. Try again later.', 'error');
+            this.setLoadingState(false);
+        }
+    }
+
+    setLoadingState(isLoading) {
+        const noteCard = document.querySelector('.bookseller-note-card');
+        if (isLoading) {
+            noteCard.classList.add('loading');
+            this.revealBtn.textContent = 'Consulting bookseller...';
+            this.revealBtn.disabled = true;
+        } else {
+            noteCard.classList.remove('loading');
+            this.revealBtn.textContent = 'Reveal Vibe';
+            this.revealBtn.disabled = false;
+        }
+    }
+
+    updateRecommendationDisplay(data) {
+        // Update title and author
+        if (data.title) {
+            this.aiBookTitle.textContent = data.title;
+        }
+        if (data.author) {
+            this.aiBookAuthor.textContent = data.author;
+        }
+        
+        // Update AI note content
+        if (data.vibe) {
+            this.aiNoteContent.innerHTML = `<em>${data.vibe}</em>`;
+        }
+        
+        // Update book cover if available
+        if (data.cover_url) {
+            const coverImg = this.recommendedBookCover.querySelector('img');
+            if (coverImg) {
+                coverImg.src = data.cover_url;
+                coverImg.alt = data.title || 'Recommended Book';
+            }
+        }
+        
+        // Remove loading state
+        this.setLoadingState(false);
+        
+        // Trigger 3D book interaction if library-3d.js is available
+        if (window.Book3D) {
+            window.Book3D.initializeBook(this.recommendedBookCover);
+        }
+    }
+}
+
+// Initialize Bookseller Recommends when DOM is ready
+document.addEventListener('DOMContentLoaded', () => {
+    new BooksellerRecommends();
+});
+
