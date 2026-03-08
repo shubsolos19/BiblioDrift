@@ -657,7 +657,7 @@ class LibraryManager {
     }
 
     saveLocally() {
-        localStorage.setItem(this.storageKey, JSON.stringify(this.library));
+        safeSetLocalStorage(this.storageKey, JSON.stringify(this.library));
     }
 
     async renderShelf(shelfName, elementId) {
@@ -702,7 +702,7 @@ class ThemeManager {
         this.toggleBtn.addEventListener('click', () => {
             this.currentTheme = this.currentTheme === 'day' ? 'night' : 'day';
             this.applyTheme(this.currentTheme);
-            localStorage.setItem(this.themeKey, this.currentTheme);
+            safeSetLocalStorage(this.themeKey, this.currentTheme);
         });
     }
 
@@ -1148,9 +1148,9 @@ async function handleAuth(event) {
             // Success!
             // Store Access Token and User Info
             if (data.access_token) {
-                localStorage.setItem('bibliodrift_token', data.access_token);
+                safeSetLocalStorage('bibliodrift_token', data.access_token);
             }
-            localStorage.setItem('bibliodrift_user', JSON.stringify(data.user));
+            safeSetLocalStorage('bibliodrift_user', JSON.stringify(data.user));
 
             if (typeof showToast === 'function')
                 showToast(`${mode === 'login' ? 'Welcome back' : 'Welcome'}, ${data.user.username}!`, "success");
@@ -1351,11 +1351,19 @@ const KeyboardShortcuts = {
     }
 };
 
-// Initialize keyboard shortcuts when DOM is ready
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => KeyboardShortcuts.init());
-} else {
-    KeyboardShortcuts.init();
+// Safe Local Storage Wrapper
+function safeSetLocalStorage(key, value) {
+    try {
+        localStorage.setItem(key, value);
+    } catch (e) {
+        if (e.name === 'QuotaExceededError' || e.code === 22) {
+            showToast("Local storage full! Please sync to cloud and clear cache.", "error");
+            console.error("localStorage quota exceeded:", e);
+        } else {
+            console.error("localStorage error:", e);
+            showToast("Failed to save data locally. Please try again.", "error");
+        }
+    }
 }
 
 // =========================================
