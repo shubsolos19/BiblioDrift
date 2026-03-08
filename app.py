@@ -7,6 +7,7 @@ from flask_jwt_extended import JWTManager, create_access_token, jwt_required, ge
 from sqlalchemy.orm import joinedload
 from dotenv import load_dotenv
 import os
+import logging
 from datetime import datetime, timedelta
 from ai_service import generate_book_note, get_ai_recommendations, get_book_mood_tags_safe, generate_chat_response, llm_service
 from models import db, User, Book, ShelfItem, BookNote, ReadingGoal, ReadingStats, Collection, CollectionItem, PriceHistory, PriceAlert, Review, register_user, login_user
@@ -49,6 +50,18 @@ from error_responses import (
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Configure logging
+logging.basicConfig(
+    level=getattr(logging, os.getenv('LOG_LEVEL', 'INFO').upper()),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('bibliodrift.log') if os.getenv('LOG_FILE') else logging.NullHandler()
+    ]
+)
+
+logger = logging.getLogger(__name__)
 
 # Try to import enhanced mood analysis
 try:
@@ -163,36 +176,36 @@ def _validate_jwt_secret_startup():
     if not is_valid:
         if is_prod:
             # In production, refuse to start with insecure configuration
-            print("\n" + "="*70)
-            print("CRITICAL SECURITY ERROR - APPLICATION REFUSING TO START")
-            print("="*70)
-            print(f"\n{message}")
-            print("\nFor production deployment, you MUST:")
-            print("  1. Set JWT_SECRET_KEY environment variable to a secure value")
-            print("  2. Use a minimum of 32 characters for the secret key")
-            print("  3. Use a cryptographically strong random string")
-            print("\nExample:")
-            print("  export JWT_SECRET_KEY=$(python -c 'import secrets; print(secrets.token_hex(32))')")
-            print("="*70 + "\n")
+            logger.critical("=" * 70)
+            logger.critical("CRITICAL SECURITY ERROR - APPLICATION REFUSING TO START")
+            logger.critical("=" * 70)
+            logger.critical(f"\n{message}")
+            logger.critical("\nFor production deployment, you MUST:")
+            logger.critical("  1. Set JWT_SECRET_KEY environment variable to a secure value")
+            logger.critical("  2. Use a minimum of 32 characters for the secret key")
+            logger.critical("  3. Use a cryptographically strong random string")
+            logger.critical("\nExample:")
+            logger.critical("  export JWT_SECRET_KEY=$(python -c 'import secrets; print(secrets.token_hex(32))')")
+            logger.critical("=" * 70)
             import sys
             sys.exit(1)
         else:
             # In development, show warning but allow startup
-            print("\n" + "="*70)
-            print("WARNING: INSECURE JWT SECRET KEY CONFIGURATION")
-            print("="*70)
-            print(f"\n{message}")
-            print("\nThis is acceptable for DEVELOPMENT only.")
-            print("For production, you MUST set a secure JWT_SECRET_KEY.")
-            print("="*70 + "\n")
+            logger.warning("=" * 70)
+            logger.warning("WARNING: INSECURE JWT SECRET KEY CONFIGURATION")
+            logger.warning("=" * 70)
+            logger.warning(f"\n{message}")
+            logger.warning("\nThis is acceptable for DEVELOPMENT only.")
+            logger.warning("For production, you MUST set a secure JWT_SECRET_KEY.")
+            logger.warning("=" * 70)
     else:
         # Secret is valid, show confirmation in development mode
         if not is_prod:
-            print("\n" + "="*70)
-            print("JWT SECRET KEY CONFIGURATION: OK")
-            print("="*70)
-            print("Using a secure JWT secret key.")
-            print("="*70 + "\n")
+            logger.info("=" * 70)
+            logger.info("JWT SECRET KEY CONFIGURATION: OK")
+            logger.info("=" * 70)
+            logger.info("Using a secure JWT secret key.")
+            logger.info("=" * 70)
 
 
 # Run JWT secret validation at module load time (before any requests)
@@ -344,7 +357,7 @@ def handle_generate_note():
         # Check cache
         cached_note = BookNote.query.filter_by(book_title=title, book_author=author).first()
         if cached_note:
-            print(f"Cache hit for {title} by {author}")
+            logger.debug(f"Cache hit for {title} by {author}")
             return success_response(data={"vibe": cached_note.content})
         
         vibe = generate_book_note(description, title, author)
@@ -356,7 +369,7 @@ def handle_generate_note():
                 db.session.add(new_note)
                 db.session.commit()
         except Exception as e:
-            print(f"Failed to cache note: {e}")
+            logger.error(f"Failed to cache note: {e}")
             db.session.rollback()
 
         return success_response(data={"vibe": vibe})
@@ -1565,16 +1578,16 @@ if __name__ == '__main__':
     host = os.getenv('FLASK_HOST', '127.0.0.1')  # Default to localhost for security
     
     if debug_mode:
-        print("--- BIBLIODRIFT MOOD ANALYSIS SERVER STARTING ON PORT", port, "---")
-        print("Available endpoints:")
-        print("  POST /api/v1/generate-note - Generate AI book notes")
+        logger.info("--- BIBLIODRIFT MOOD ANALYSIS SERVER STARTING ON PORT %d ---", port)
+        logger.info("Available endpoints:")
+        logger.info("  POST /api/v1/generate-note - Generate AI book notes")
         if MOOD_ANALYSIS_AVAILABLE:
-            print("  POST /api/v1/analyze-mood - Analyze book mood from GoodReads")
-            print("  POST /api/v1/mood-tags - Get mood tags for a book")
+            logger.info("  POST /api/v1/analyze-mood - Analyze book mood from GoodReads")
+            logger.info("  POST /api/v1/mood-tags - Get mood tags for a book")
         else:
-            print("  [DISABLED] Mood analysis endpoints (missing dependencies)")
-        print("  POST /api/v1/mood-search - Search books by mood/vibe")
-        print("  POST /api/v1/chat - Chat with bookseller")
-        print("  GET  /api/v1/health - Health check")
+            logger.warning("  [DISABLED] Mood analysis endpoints (missing dependencies)")
+        logger.info("  POST /api/v1/mood-search - Search books by mood/vibe")
+        logger.info("  POST /api/v1/chat - Chat with bookseller")
+        logger.info("  GET  /api/v1/health - Health check")
     
     app.run(debug=debug_mode, port=port, host=host)
