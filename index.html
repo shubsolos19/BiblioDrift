@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="en">
 
 <head>
@@ -6,7 +6,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>BiblioDrift | Find yourself in the pages</title>
   <link rel="stylesheet" href="style.css" />
-  <link rel="stylesheet" href="style-responsive.css" />
 
   <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -59,6 +58,17 @@
     <section class="hero">
       <h1>Find yourself in the pages.</h1>
       <p>A curated sanctuary for those who read through emotions.</p>
+    </section>
+
+    <!-- SEARCH RESULTS SECTION (Initially Hidden) -->
+    <section id="search-results-section" class="curated-section" style="display: none;">
+      <div class="section-header">
+        <h2 id="search-query-display">Search Results</h2>
+        <span><i class="fa-solid fa-magnifying-glass"></i> Exploring your query</span>
+      </div>
+      <div class="curated-row" id="search-results-grid">
+        <!-- Dynamically Appended Books -->
+      </div>
     </section>
 
     <!-- Curated Sections -->
@@ -136,6 +146,7 @@
             </div>
             <div class="modal-actions">
               <button id="modal-add-btn" class="btn-primary"><i class="fa-regular fa-heart"></i> Add to Library</button>
+              <button id="modal-share-btn" class="btn-secondary" style="margin-left: 10px; padding: 0.8rem 1.5rem; border: 1px solid var(--glass-border); border-radius: 8px; background: transparent; cursor: pointer; color: var(--text-main); font-family: inherit; transition: all 0.3s ease;"><i class="fa-solid fa-share-nodes"></i> Share</button>
             </div>
           </div>
         </div>
@@ -152,9 +163,11 @@
   <footer class="main-footer">
     <div class="footer-container">
       <div class="footer-brand">
-        <a href="index.html" class="logo"><img src="biblioDrift_favicon.png">BiblioDrift</a>
+        <a href="index.html" class="logo">
+          <img style="height: 40px" src="biblioDrift_favicon.png" alt="BiblioDrift Logo"> BiblioDrift
+        </a>
         <p class="footer-tagline">"There is no frigate like a book to take us lands away."</p>
-        <p class="footer-subtext">— Emily Dickinson</p>
+        <p class="footer-subtext">â€” Emily Dickinson</p>
       </div>
       <div class="footer-nav">
         <h3>Explore</h3>
@@ -179,6 +192,7 @@
     </div>
   </footer>
 
+  <script src="config.js"></script>
   <script src="app.js"></script>
   <script src="script/header-scroll.js"></script>
   <script>
