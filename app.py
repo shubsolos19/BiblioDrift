@@ -7,6 +7,8 @@ from flask_jwt_extended import JWTManager, create_access_token, jwt_required, ge
 from sqlalchemy.orm import joinedload
 from dotenv import load_dotenv
 import os
+import requests
+
 import logging
 from datetime import datetime, timedelta
 
@@ -1580,6 +1582,22 @@ def delete_price_alert(alert_id):
 with app.app_context():
     db.create_all()  # creates User & ShelfItem tables
 
+@app.route('/api/books', methods=['GET'])
+def get_books():
+    query = request.args.get('q')
+    max_results = request.args.get('maxResults', 10)
+
+    API_KEY = os.getenv("GOOGLE_BOOKS_API_KEY")
+
+    url = f"https://www.googleapis.com/books/v1/volumes?q={query}&maxResults={max_results}&key={API_KEY}"
+
+    try:
+        response = requests.get(url)
+        data = response.json()
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": "Failed to fetch books"}), 500
+
 if __name__ == '__main__':
     # Use centralized configuration for server settings
     server_config = app_config.server
@@ -1601,5 +1619,10 @@ if __name__ == '__main__':
                    "Enabled" if app_config.rate_limit.enabled else "Disabled",
                    app_config.rate_limit.window_seconds,
                    app_config.rate_limit.max_requests)
+
+
     
     app.run(debug=server_config.debug, port=server_config.port, host=server_config.host)
+
+
+    
