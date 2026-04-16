@@ -47,6 +47,7 @@ BIBLIODRIFT/
 │   │
 │   ├── mood_analysis/          # mood-based recommendation logic
 │   └── purchase_links/         # purchase link generation
+|   ├── price_tracker/   
 │
 ├── frontend/                   #  UI (client-side)
 │   ├── pages/                  # HTML files
@@ -97,7 +98,6 @@ BIBLIODRIFT/
 ├── README.md
 ├── LICENSE
 ├── netlify/                    # deployment config
-├── price_tracker/              # optional module
 ├── script/ (if any left)       
 ├── venv/                       
 └── .vscode/
