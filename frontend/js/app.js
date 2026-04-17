@@ -5,13 +5,22 @@
 
 const API_BASE = 'https://www.googleapis.com/books/v1/volumes';
 const API_KEY = 'YOUR_GOOGLE_BOOKS_API_KEY';
-const MOOD_API_BASE = (typeof window !== 'undefined' && window.MOOD_API_BASE) || (typeof CONFIG !== 'undefined' ? CONFIG.MOOD_API_BASE : '/api/v1');
-
 let GOOGLE_API_KEY = '';
+const MOOD_API_BASE = '/api/v1'; // Standardized path
+
+/**
+ * Utility to extract a cookie value by name.
+ */
+function getCookie(name) {
+    const value = `; ${document.cookie}`;
+    const parts = value.split(`; ${name}=`);
+    if (parts.length === 2) return parts.pop().split(';').shift();
+    return null;
+}
 
 async function loadConfig() {
     try {
-        const res = await fetch(`${MOOD_API_BASE}/config`);
+        const res = await fetch(`${MOOD_API_BASE}/config`, { credentials: 'include' });
         if (res.ok) {
             const data = await res.json();
             GOOGLE_API_KEY = data.google_books_key || '';
@@ -413,6 +422,7 @@ class BookRenderer {
             const res = await fetch(`${MOOD_API_BASE}/generate-note`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
                 body: JSON.stringify({ title, author, description })
             });
             if (res.ok) {
@@ -573,11 +583,15 @@ class LibraryManager {
     }
 
     getAuthHeaders() {
-        const token = SafeStorage.get('bibliodrift_token');
-        return new Headers({
-            'Content-Type': 'application/json',
-            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        });
+        const csrfToken = getCookie('csrf_access_token');
+        const headers = {
+            'Content-Type': 'application/json'
+        };
+        // CSRF protection for cookie-based auth
+        if (csrfToken) {
+            headers['X-CSRF-TOKEN'] = csrfToken;
+        }
+        return new Headers(headers);
     }
 
     async syncWithBackend() {
@@ -586,7 +600,8 @@ class LibraryManager {
 
         try {
             const res = await fetch(`${this.apiBase}/library/${user.id}`, {
-                headers: this.getAuthHeaders()
+                headers: this.getAuthHeaders(),
+                credentials: 'include'
             });
             if (res.ok) {
                 const data = await res.json();
@@ -707,6 +722,7 @@ class LibraryManager {
             const res = await fetch(`${this.apiBase}/library/sync`, {
                 method: 'POST',
                 headers: this.getAuthHeaders(),
+                credentials: 'include',
                 body: JSON.stringify({
                     user_id: user.id,
                     items: itemsToSync
@@ -822,6 +838,7 @@ class LibraryManager {
                 const res = await fetch(`${this.apiBase}/library`, {
                     method: 'POST',
                     headers: this.getAuthHeaders(),
+                    credentials: 'include',
                     body: JSON.stringify(payload)
                 });
 
@@ -866,6 +883,7 @@ class LibraryManager {
                 const res = await fetch(`${this.apiBase}/library/${book.db_id}`, {
                     method: 'PUT',
                     headers: this.getAuthHeaders(),
+                    credentials: 'include',
                     body: JSON.stringify({
                         ...updates,
                         version: book.version // Optimistic locking
@@ -933,7 +951,11 @@ class LibraryManager {
             // Do we have it?
             if (user && book.db_id) {
                 try {
-                    await fetch(`${this.apiBase}/library/${book.db_id}`, { method: 'DELETE', headers: this.getAuthHeaders() });
+                    await fetch(`${this.apiBase}/library/${book.db_id}`, { 
+                        method: 'DELETE', 
+                        headers: this.getAuthHeaders(),
+                        credentials: 'include'
+                    });
                 } catch (e) {
                     console.error("Failed to delete from backend", e);
                     showToast("Removed locally (Backend sync failed)", "info");
@@ -1191,7 +1213,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 
 
-    const isLoggedIn = SafeStorage.get('isLoggedIn') === 'true';
+    const isLoggedIn = !!libManager.getUser(); // Rely on user object instead of forgeable flag
     const authLink = document.getElementById('navAuthLink');
     if (isLoggedIn && authLink) {
         authLink.innerHTML = '<i class="fa-solid fa-user"></i>';
@@ -1303,9 +1325,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
 
         // Logout
-        document.getElementById('logout-btn').addEventListener('click', () => {
+        document.getElementById('logout-btn').addEventListener('click', async () => {
+            try {
+                // Clear backend cookies
+                await fetch(`${MOOD_API_BASE}/logout`, { method: 'POST', credentials: 'include' });
+            } catch (e) {
+                console.warn("Backend logout failed", e);
+            }
             SafeStorage.remove('bibliodrift_user');
             SafeStorage.remove('bibliodrift_token');
+            SafeStorage.remove('isLoggedIn');
             window.location.href = 'index.html';
         });
     }
@@ -1390,9 +1419,10 @@ async function handleAuth(event) {
         btn.textContent = 'Processing...';
         btn.disabled = true;
 
-        const res = await fetch(`${MOOD_API_BASE}${endpoint}`, {
+        const res = await fetch(`${MOOD_API_BASE}${endpoint.replace('/api/v1', '')}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
             body: JSON.stringify(payload)
         });
 
@@ -1403,10 +1433,7 @@ async function handleAuth(event) {
 
         if (res.ok) {
             // Success!
-            // Store Access Token and User Info
-            if (data.access_token) {
-                SafeStorage.set('bibliodrift_token', data.access_token);
-            }
+            // Token is now in an HttpOnly cookie (managed by backend)
             SafeStorage.set('bibliodrift_user', JSON.stringify(data.user));
 
             if (typeof showToast === 'function')
