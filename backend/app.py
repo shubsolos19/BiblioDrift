@@ -11,7 +11,9 @@ import requests
 
 import logging
 from datetime import datetime, timedelta
-from sanitizer import sanitize_payload
+from sanitizer import sanitize_payload, sanitize_string
+from security_parsers import safe_get_json, get_request_arg_safe, validate_content_type, JSONParseError
+from middleware import safe_request_handler, validate_content_type_middleware, require_json_content_type
 
 # Load environment variables from .env file BEFORE importing config
 load_dotenv()
@@ -284,13 +286,17 @@ def index():
 
 @app.route('/api/v1/analyze-mood', methods=['POST'])
 @rate_limit('analyze_mood')
+@require_json_content_type
 def handle_analyze_mood():
     """Analyze book mood using GoodReads reviews."""
     if not MOOD_ANALYSIS_AVAILABLE:
         return service_unavailable_error("Mood analysis not available - missing dependencies")
     
     try:
-        data = request.get_json()
+        # Safely parse JSON with size limits
+        success, data, error = safe_get_json()
+        if not success:
+            return invalid_json_error(error)
         
         # Validate request using Pydantic
         is_valid, validated_data = validate_request(AnalyzeMoodRequest, data)
@@ -309,7 +315,10 @@ def handle_analyze_mood():
         else:
             return not_found_error("Mood analysis for this book")
             
+    except JSONParseError as e:
+        return invalid_json_error(f"Failed to parse request: {str(e)}")
     except Exception as e:
+        logger.error(f"Error in handle_analyze_mood: {str(e)}", exc_info=True)
         return internal_error(str(e))
 
 @app.route('/api/v1/mood-tags', methods=['POST'])
@@ -690,11 +699,16 @@ price_tracker = get_price_tracker(db)
 
 @app.route('/api/v1/library/sync', methods=['POST'])
 @jwt_required()
+@require_json_content_type
 def sync_library():
     """Sync a list of books from local storage to the user's account."""
     try:
         current_user_id = get_jwt_identity()
-        data = request.get_json()
+        
+        # Safely parse JSON with size and depth validation
+        success, data, error = safe_get_json()
+        if not success:
+            return invalid_json_error(error)
         
         # Validate request using Pydantic
         is_valid, validated_data = validate_request(SyncLibraryRequest, data)
@@ -702,7 +716,7 @@ def sync_library():
             return jsonify(validated_data), 400
         
         user_id = validated_data.user_id
-        # Manually sanitize the items list since it's a generic dict list
+        # Sanitize the items list - recursively cleans all values
         items = sanitize_payload(validated_data.items)
         
         if str(user_id) != str(current_user_id):
@@ -723,6 +737,9 @@ def sync_library():
                     errors += 1
                     continue
                 
+                # Sanitize google_id to prevent injection
+                google_id = sanitize_string(str(google_id), max_len=100)
+                
                 # 1. Ensure Book Exists
                 book = Book.query.filter_by(google_books_id=google_id).first()
                 
@@ -731,13 +748,15 @@ def sync_library():
                     image_links = volume_info.get('imageLinks', {})
                     authors = volume_info.get('authors', [])
                     if isinstance(authors, list):
-                        authors = ", ".join(authors)
+                        authors = ", ".join(sanitize_string(str(a)) for a in authors)
+                    else:
+                        authors = sanitize_string(str(authors))
 
                     book = Book(
                         google_books_id=google_id,
-                        title=volume_info.get('title', 'Untitled'),
+                        title=sanitize_string(str(volume_info.get('title', 'Untitled'))),
                         authors=authors,
-                        thumbnail=image_links.get('thumbnail', '')
+                        thumbnail=sanitize_string(str(image_links.get('thumbnail', '')), max_len=500)
                     )
                     db.session.add(book)
                     db.session.commit() # Need ID for next step
@@ -746,7 +765,7 @@ def sync_library():
                 existing_item = ShelfItem.query.filter_by(user_id=user_id, book_id=book.id).first()
                 if not existing_item:
                     shelf_type = item_data.get('shelf', 'want')
-                    # Validate shelf type
+                    # Validate shelf type against whitelist
                     if shelf_type not in ['want', 'current', 'finished']:
                         shelf_type = 'want'
                         
@@ -897,8 +916,14 @@ def set_reading_goal():
 @jwt_required()
 def get_reading_stats():
     """Get reading statistics for the user."""
-    user_id = request.args.get('user_id', type=int)
-    year = request.args.get('year', datetime.now().year, type=int)
+    # Safely get and validate integer parameters
+    success, user_id, error = get_request_arg_safe('user_id', int, required=False)
+    if not success and error:
+        return validation_error(error)
+    
+    success, year, error = get_request_arg_safe('year', int, default=datetime.now().year)
+    if not success and error:
+        return validation_error(error)
     
     if not user_id:
         return jsonify({"error": "user_id is required"}), 400
@@ -942,8 +967,16 @@ def get_reading_stats():
 @jwt_required()
 def get_leaderboard():
     """Get community reading leaderboard."""
-    year = request.args.get('year', datetime.now().year, type=int)
-    limit = request.args.get('limit', 10, type=int)
+    # Safely get and validate integer parameters with bounds
+    success, year, error = get_request_arg_safe('year', int, default=datetime.now().year)
+    if not success and error:
+        return validation_error(error)
+    
+    success, limit, error = get_request_arg_safe(
+        'limit', int, default=10, allowed_values=list(range(1, 101))
+    )
+    if not success and error:
+        return validation_error(error)
     
     try:
         # Get all goals for the year
@@ -1025,14 +1058,13 @@ def create_collection():
 @jwt_required()
 def get_collections():
     """Get user's collections."""
-    user_id = request.args.get('user_id', type=int)
-    
-    if not user_id:
-        return jsonify({"error": "user_id is required"}), 400
+    success, user_id, error = get_request_arg_safe('user_id', int, required=True)
+    if not success:
+        return validation_error(error)
     
     current_user_id = get_jwt_identity()
     if str(user_id) != str(current_user_id):
-        return jsonify({"error": "Unauthorized"}), 403
+        return forbidden_error("Cannot access another user's collections")
     
     try:
         collections = Collection.query.filter_by(user_id=user_id).order_by(Collection.created_at.desc()).all()
@@ -1493,21 +1525,27 @@ def get_price_history(book_id):
     """Get price history for a book (requires JWT)."""
     current_user_id = get_jwt_identity()
     
-    # Get optional query parameters
-    retailer = request.args.get('retailer')
-    limit = request.args.get('limit', 30, type=int)
+    # Safely get optional query parameters
+    success, retailer, error = get_request_arg_safe('retailer', str, required=False)
+    if not success and error:
+        retailer = None
     
-    # Validate limit
-    if limit < 1 or limit > 100:
-        limit = 30
+    success, limit, error = get_request_arg_safe(
+        'limit', int, default=30, allowed_values=list(range(1, 101))
+    )
+    if not success and error:
+        return validation_error(error)
+    
+    # Sanitize book_id input
+    book_id_clean = sanitize_string(str(book_id), max_len=100)
     
     try:
         # Verify book exists
         book = None
-        if book_id.isdigit():
-            book = Book.query.get(int(book_id))
+        if book_id_clean.isdigit():
+            book = Book.query.get(int(book_id_clean))
         else:
-            book = Book.query.filter_by(google_books_id=book_id).first()
+            book = Book.query.filter_by(google_books_id=book_id_clean).first()
         
         if not book:
             return jsonify({"error": "Book not found"}), 404
