@@ -5,6 +5,10 @@
 
 const API_BASE = 'https://www.googleapis.com/books/v1/volumes';
 const API_KEY = 'YOUR_GOOGLE_BOOKS_API_KEY';
+const MOOD_API_BASE = 'http://localhost:5000/api/v1';
+
+const delay = (ms) => new Promise(res => setTimeout(res, ms));
+
 let GOOGLE_API_KEY = '';
 const MOOD_API_BASE = '/api/v1'; // Standardized path
 
@@ -504,8 +508,14 @@ class BookRenderer {
             const res = await fetch(`${API_BASE}?q=${encodedQuery}&maxResults=${maxResults}&printType=books${keyParam}`);
 
             if (!res.ok) {
-                throw new Error(`API Error: ${res.statusText}`);
-            }
+    if (res.status === 503) {
+        console.warn("Server busy, retrying...");
+        await delay(2000); // wait 2 sec
+        return this.renderCuratedSection(query, elementId, maxResults);
+    }
+
+    throw new Error(`API Error: ${res.statusText}`);
+}
 
             const data = await res.json();
 
@@ -1261,10 +1271,17 @@ document.addEventListener('DOMContentLoaded', async () => {
             </section>`;
         renderer.renderCuratedSection(query, 'search-results', 20);
     } else if (document.getElementById('row-rainy')) {
-        renderer.renderCuratedSection('subject:mystery atmosphere', 'row-rainy');
-        renderer.renderCuratedSection('authors:amitav ghosh|authors:arundhati roy|subject:india', 'row-indian');
-        renderer.renderCuratedSection('subject:classic fiction', 'row-classics');
-        renderer.renderCuratedSection('subject:fiction', 'row-genre');
+        (async () => {
+    await renderer.renderCuratedSection('subject:mystery atmosphere', 'row-rainy');
+    await delay(1500);
+
+    await renderer.renderCuratedSection('authors:amitav ghosh|authors:arundhati roy|subject:india', 'row-indian');
+    await delay(1500);
+
+    await renderer.renderCuratedSection('subject:classic fiction', 'row-classics');
+
+    await renderer.renderCuratedSection('subject:fiction', 'row-genre');
+})();
     }
 
     // Re-rendering is now handled by libManager.init() asynchronously to ensure
