@@ -29,7 +29,7 @@ const createFooter = () => {
             <a href="#" title="LinkedIn"><i class="fab fa-linkedin-in"></i></a>
             <a href="#" title="Instagram"><i class="fab fa-instagram"></i></a>
             <a href="#" title="Facebook"><i class="fab fa-facebook-f"></i></a>
-            <a href="https://github.com/devanshi14malhotra/BiblioDrift" target="_blank" title="GitHub">
+            <a href="https://github.com/devanshi14malhotra/BiblioDrift" target="_blank" rel="noopener noreferrer" title="GitHub">
               <i class="fa-brands fa-github"></i>
             </a>
           </div>

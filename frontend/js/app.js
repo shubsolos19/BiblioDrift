@@ -3,14 +3,13 @@
  * Handles 3D rendering, API fetching, Persistent Auth, and Genre Browsing.
  */
 
-const API_BASE = 'https://www.googleapis.com/books/v1/volumes';
-const API_KEY = 'YOUR_GOOGLE_BOOKS_API_KEY';
-const MOOD_API_BASE = 'http://localhost:5000/api/v1';
+const API_BASE = (typeof CONFIG !== 'undefined' && CONFIG.API_BASE) ? CONFIG.API_BASE : 'https://www.googleapis.com/books/v1/volumes';
+const MOOD_API_BASE = (typeof CONFIG !== 'undefined' && CONFIG.MOOD_API_BASE) ? CONFIG.MOOD_API_BASE : '/api/v1';
+const IS_DEV = typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname);
 
 const delay = (ms) => new Promise(res => setTimeout(res, ms));
 
 let GOOGLE_API_KEY = '';
-const MOOD_API_BASE = '/api/v1'; // Standardized path
 
 /**
  * Utility to extract a cookie value by name.
@@ -28,7 +27,13 @@ async function loadConfig() {
         if (res.ok) {
             const data = await res.json();
             GOOGLE_API_KEY = data.google_books_key || '';
-            if (process.env.NODE_ENV === 'development') {
+            if (window.GoogleBooksClient) {
+                window.GoogleBooksClient.setKeys([
+                    data.google_books_key,
+                    data.google_books_key_secondary
+                ]);
+            }
+            if (IS_DEV) {
                 console.log("Config loaded");
             }
         }
@@ -72,7 +77,7 @@ const SafeStorage = {
         if (navigator.storage && navigator.storage.persist) {
             try {
                 const isPersisted = await navigator.storage.persist();
-                if (process.env.NODE_ENV === 'development') {
+                if (IS_DEV) {
                     console.log(`[Storage] Persistent status: ${isPersisted}`);
                 }
             } catch (e) {
@@ -176,7 +181,7 @@ const SafeStorage = {
                 });
                 
                 if (val) {
-                    if (process.env.NODE_ENV === 'development') console.log("[Storage] Restored from IndexedDB backup");
+                    if (IS_DEV) console.log("[Storage] Restored from IndexedDB backup");
                     // Try to restore to LocalStorage for future sync calls
                     try { localStorage.setItem(key, val); } catch(e) {}
                 }
@@ -282,6 +287,38 @@ const MOCK_BOOKS = [
     }
 ];
 
+function normalizeQueryTerms(query) {
+    return String(query || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .filter(Boolean);
+}
+
+function scoreMockBook(book, queryTerms) {
+    const volumeInfo = book.volumeInfo || {};
+    const haystack = [
+        volumeInfo.title || '',
+        (volumeInfo.authors || []).join(' '),
+        volumeInfo.description || '',
+        (volumeInfo.categories || []).join(' ')
+    ].join(' ').toLowerCase();
+
+    return queryTerms.reduce((score, term) => score + (haystack.includes(term) ? 1 : 0), 0);
+}
+
+function getFallbackBooks(query, maxResults = 5) {
+    const queryTerms = normalizeQueryTerms(query);
+    const ranked = MOCK_BOOKS
+        .map(book => ({ book, score: scoreMockBook(book, queryTerms) }))
+        .sort((a, b) => b.score - a.score);
+
+    const matches = ranked.filter(item => item.score > 0).map(item => item.book);
+    const pool = matches.length > 0 ? matches : MOCK_BOOKS;
+
+    return pool.slice(0, maxResults);
+}
+
 
 class BookRenderer {
     constructor(libraryManager = null) {
@@ -362,7 +399,7 @@ class BookRenderer {
                 bookEl.classList.toggle('flipped');
                 // Play sound
                 flipSound.play().catch(e => {
-                    if (process.env.NODE_ENV === 'development') {
+                    if (IS_DEV) {
                         console.log("Audio play failed", e);
                     }
                 });
@@ -503,43 +540,55 @@ class BookRenderer {
         const container = document.getElementById(elementId);
         if (!container) return;
         try {
-            const keyParam = GOOGLE_API_KEY ? `&key=${GOOGLE_API_KEY}` : '';
-            const encodedQuery = encodeURIComponent(query);
-            const res = await fetch(`${API_BASE}?q=${encodedQuery}&maxResults=${maxResults}&printType=books${keyParam}`);
-
-            if (!res.ok) {
-    if (res.status === 503) {
-        console.warn("Server busy, retrying...");
-        await delay(2000); // wait 2 sec
-        return this.renderCuratedSection(query, elementId, maxResults);
-    }
-
-    throw new Error(`API Error: ${res.statusText}`);
-}
-
-            const data = await res.json();
+            const client = window.GoogleBooksClient;
+            const data = client
+                ? await client.fetchVolumes(query, { maxResults, extraParams: '&printType=books' })
+                : await (async () => {
+                    const keyParam = GOOGLE_API_KEY ? `&key=${GOOGLE_API_KEY}` : '';
+                    const encodedQuery = encodeURIComponent(query);
+                    const res = await fetch(`${API_BASE}?q=${encodedQuery}&maxResults=${maxResults}&printType=books${keyParam}`);
+                    if (!res.ok) {
+                        throw new Error(`API Error: ${res.statusText}`);
+                    }
+                    return await res.json();
+                })();
 
             if (data.items && data.items.length > 0) {
-                container.innerHTML = '';
-                for (const book of data.items) {
-                    const bookElement = await this.createBookElement(book);
-                    container.appendChild(bookElement);
-                }
+                await this.renderBookCards(container, data.items.slice(0, maxResults));
             } else {
-                container.innerHTML = `
-                    <div class="empty-state">
-                        <i class="fa-solid fa-box-open"></i>
-                        <p>No books found. The shelves are empty.</p>
-                    </div>`;
+                const fallbackBooks = getFallbackBooks(query, maxResults);
+                if (fallbackBooks.length > 0) {
+                    await this.renderBookCards(container, fallbackBooks);
+                } else {
+                    container.innerHTML = `
+                        <div class="empty-state">
+                            <i class="fa-solid fa-box-open"></i>
+                            <p>No books found. The shelves are empty.</p>
+                        </div>`;
+                }
             }
         } catch (err) {
             console.error("Failed to fetch books", err);
+            const fallbackBooks = getFallbackBooks(query, maxResults);
+            if (fallbackBooks.length > 0) {
+                await this.renderBookCards(container, fallbackBooks);
+                return;
+            }
+
             showToast("Failed to load bookshelf.", "error");
             container.innerHTML = `
                 <div class="empty-state">
                     <i class="fa-solid fa-triangle-exclamation"></i>
                     <p>Bookshelf Empty (API connection failed)</p>
                 </div>`;
+        }
+    }
+
+    async renderBookCards(container, books) {
+        container.innerHTML = '';
+        for (const book of books) {
+            const bookElement = await this.createBookElement(book);
+            container.appendChild(bookElement);
         }
     }
 }
@@ -726,7 +775,7 @@ class LibraryManager {
         if (itemsToSync.length === 0) return; // Nothing to sync
 
         try {
-            if (process.env.NODE_ENV === 'development') {
+            if (IS_DEV) {
                 console.log(`Syncing ${itemsToSync.length} items to backend...`);
             }
             const res = await fetch(`${this.apiBase}/library/sync`, {
@@ -741,7 +790,7 @@ class LibraryManager {
 
             if (res.ok) {
                 const data = await res.json();
-                if (process.env.NODE_ENV === 'development') {
+                if (IS_DEV) {
                     console.log("Sync result:", data);
                 }
                 
@@ -765,7 +814,7 @@ class LibraryManager {
     }
 
     setupSorting() {
-        const sortSelect = document.getElementById('sortLibrary');
+        const sortSelect = document.getElementById('library-sort');
         if (sortSelect) {
             sortSelect.addEventListener('change', (e) => {
                 this.sortLibrary(e.target.value);
@@ -828,7 +877,7 @@ class LibraryManager {
         // 1. Update Local State
         this.library[shelf].push(enrichedBook);
         this.saveLocally();
-        if (process.env.NODE_ENV === 'development') {
+        if (IS_DEV) {
             console.log(`Added ${book.volumeInfo.title} to ${shelf}`);
         }
 
@@ -950,7 +999,7 @@ class LibraryManager {
             // 1. Update Local
             this.library[shelf] = this.library[shelf].filter(b => b.id !== id);
             this.saveLocally();
-            if (process.env.NODE_ENV === 'development') {
+            if (IS_DEV) {
                 console.log(`Removed book ${id} from ${shelf}`);
             }
 
@@ -1112,39 +1161,27 @@ class GenreManager {
         `;
 
         try {
-            // Fetch relevant books from Google Books API
-            // Using subject search and higher relevance
-            const keyParam = GOOGLE_API_KEY ? `&key=${GOOGLE_API_KEY}` : '';
-            const response = await fetch(`${API_BASE}?q=subject:${genre}&maxResults=20&langRestrict=en&orderBy=relevance${keyParam}`);
+            const client = window.GoogleBooksClient;
+            const data = client
+                ? await client.fetchVolumes(`subject:${genre}`, { maxResults: 20, extraParams: '&langRestrict=en&orderBy=relevance' })
+                : await (async () => {
+                    const keyParam = GOOGLE_API_KEY ? `&key=${GOOGLE_API_KEY}` : '';
+                    const response = await fetch(`${API_BASE}?q=subject:${genre}&maxResults=20&langRestrict=en&orderBy=relevance${keyParam}`);
+                    if (!response.ok) {
+                        throw new Error(`API Error: ${response.status}`);
+                    }
+                    return await response.json();
+                })();
 
-            if (response.ok) {
-                const data = await response.json();
-                const items = data.items || [];
-
-                if (items.length > 0) {
-                    this.renderBooks(items);
-                } else {
-                    this.booksGrid.innerHTML = `
-                        <div class="empty-state">
-                            <i class="fa-solid fa-box-open"></i>
-                            <p>Bookshelf Empty (No books found)</p>
-                        </div>`;
-                }
+            const items = data.items || [];
+            if (items.length > 0) {
+                this.renderBooks(items);
             } else {
-                console.warn(`API Error ${response.status}`);
-                this.booksGrid.innerHTML = `
-                    <div class="empty-state">
-                        <i class="fa-solid fa-triangle-exclamation"></i>
-                        <p>Bookshelf Empty (API Error: ${response.status})</p>
-                    </div>`;
+                this.renderBooks(getFallbackBooks(genre, 20));
             }
         } catch (error) {
             console.error('Error fetching genre books:', error);
-            this.booksGrid.innerHTML = `
-                <div class="empty-state">
-                    <i class="fa-solid fa-wifi"></i>
-                    <p>Bookshelf Empty (Connection Failed)</p>
-                </div>`;
+            this.renderBooks(getFallbackBooks(genre, 20));
         }
     }
 
@@ -1540,7 +1577,7 @@ document.addEventListener("click", (e) => {
     const scene = e.target.closest(".book-scene");
     if (!scene) return;
 
-    if (process.env.NODE_ENV === 'development') {
+        if (IS_DEV) {
         console.log("BOOK CLICK");
     }
 
@@ -1577,7 +1614,7 @@ const KeyboardShortcuts = {
     // Initialize keyboard event listener
     init() {
         document.addEventListener('keydown', (e) => this.handleKeyPress(e));
-        if (process.env.NODE_ENV === 'development') {
+        if (IS_DEV) {
             console.log('BiblioDrift Keyboard Shortcuts Initialized');
         }
     },
@@ -1603,56 +1640,56 @@ const KeyboardShortcuts = {
     executeAction(action) {
         switch (action) {
             case 'navigateNext':
-                if (process.env.NODE_ENV === 'development') {
+                if (IS_DEV) {
                     console.log('Navigating to next book...');
                 }
                 // TODO: Implement next book navigation
                 break;
             case 'navigatePrev':
-                if (process.env.NODE_ENV === 'development') {
+                if (IS_DEV) {
                     console.log('Navigating to previous book...');
                 }
                 // TODO: Implement previous book navigation
                 break;
             case 'selectBook':
-                if (process.env.NODE_ENV === 'development') {
+                if (IS_DEV) {
                     console.log('Selecting current book...');
                 }
                 // TODO: Implement book selection
                 break;
             case 'addToWantRead':
-                if (process.env.NODE_ENV === 'development') {
+                if (IS_DEV) {
                     console.log('Adding to Want to Read list...');
                 }
                 // TODO: Implement add to want read
                 break;
             case 'markCurrentlyReading':
-                if (process.env.NODE_ENV === 'development') {
+                if (IS_DEV) {
                     console.log('Marking as Currently Reading...');
                 }
                 // TODO: Implement mark as reading
                 break;
             case 'addToFavorites':
-                if (process.env.NODE_ENV === 'development') {
+                if (IS_DEV) {
                     console.log('Adding to Favorites...');
                 }
                 // TODO: Implement add to favorites
                 break;
             case 'closeModal':
-                if (process.env.NODE_ENV === 'development') {
+                if (IS_DEV) {
                     console.log('Closing modal...');
                 }
                 const modals = document.querySelectorAll('.modal, [role="dialog"]');
                 modals.forEach(modal => modal.style.display = 'none');
                 break;
             case 'showHelpMenu':
-                if (process.env.NODE_ENV === 'development') {
+                if (IS_DEV) {
                     console.log('Showing help menu...');
                 }
                 this.displayHelpMenu();
                 break;
             case 'focusSearch':
-                if (process.env.NODE_ENV === 'development') {
+                if (IS_DEV) {
                     console.log('Focusing search bar...');
                 }
                 const searchInput = document.querySelector('input[type="search"], input.search, [placeholder*="search" i]');

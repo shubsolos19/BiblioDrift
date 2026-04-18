@@ -6810,6 +6810,74 @@ main {
     color: var(--accent-gold);
 }
 
+.logo img {
+    height: 40px;
+}
+
+.search-icon {
+    cursor: pointer;
+}
+
+.modal-share-btn {
+    margin-left: 10px;
+    padding: 0.8rem 1.5rem;
+    border: 1px solid var(--glass-border);
+    border-radius: 8px;
+    background: transparent;
+    cursor: pointer;
+    color: var(--text-main);
+    font-family: inherit;
+    transition: all 0.3s ease;
+}
+
+.library-hero {
+    padding-bottom: 2rem;
+    position: relative;
+}
+
+.library-export-btn {
+    position: absolute;
+    top: 45px;
+    right: 0;
+}
+
+.library-empty-link {
+    margin-top: 1.5rem;
+    text-decoration: none;
+}
+
+.library-select-label {
+    margin-right: 10px;
+    font-weight: bold;
+}
+
+.library-shelf-select {
+    padding: 0.5rem;
+    border-radius: 5px;
+    border: 1px solid #ccc;
+}
+
+.library-remove-btn {
+    margin-left: 10px;
+    background-color: #ff4d4d;
+}
+
+.library-share-btn {
+    margin-left: 10px;
+    border: 1px solid var(--glass-border);
+    background-color: transparent;
+    color: var(--text-main);
+    padding: 0.5rem 1rem;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.library-empty-state[hidden],
+#search-results-section[hidden] {
+    display: none !important;
+}
+
 /* EXPORT BUTTON UPGRADE */
 #export-library {
     position: absolute;

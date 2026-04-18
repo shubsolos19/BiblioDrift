@@ -327,7 +327,7 @@ class BookshelfRenderer3D {
         // Show/Hide Global Empty State
         const emptyState = document.getElementById('library-empty-state');
         if (emptyState) {
-            emptyState.style.display = isEmpty ? 'flex' : 'none';
+            emptyState.hidden = !isEmpty;
         }
     }
 
